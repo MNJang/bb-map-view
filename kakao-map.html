@@ -8,6 +8,10 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
     #map { width: 100%; height: 100%; }
+    @keyframes pulseRing {
+      0% { transform: scale(1); opacity: 1; }
+      100% { transform: scale(1.8); opacity: 0; }
+    }
   </style>
 </head>
 <body>
@@ -235,7 +239,35 @@
         case 'updateMarkers': updateMarkers(data); break;
         case 'geocode': geocode(data.address, data.requestId); break;
         case 'clear': clearMap(); break;
+        case 'panTo': panToMarker(data); break;
       }
+    }
+
+    // 특정 마커로 이동 + 강조
+    function panToMarker(data) {
+      if (!map) return;
+      var lat = parseFloat(data.lat), lng = parseFloat(data.lng);
+      if (isNaN(lat) || isNaN(lng)) return;
+      
+      map.setCenter(new kakao.maps.LatLng(lat, lng));
+      map.setLevel(4);
+      
+      // 기존 강조 제거
+      if (window._highlightOverlay) { window._highlightOverlay.setMap(null); }
+      
+      // 강조 링 표시
+      var ring = '<div style="width:44px;height:44px;border:3px solid #E07070;border-radius:50%;animation:pulseRing 1.2s ease-out infinite;"></div>';
+      window._highlightOverlay = new kakao.maps.CustomOverlay({
+        content: '<div style="position:relative;">' + ring + '</div>',
+        position: new kakao.maps.LatLng(lat, lng),
+        yAnchor: 0.5, zIndex: 20
+      });
+      window._highlightOverlay.setMap(map);
+      
+      // 3초 후 자동 제거
+      setTimeout(function() {
+        if (window._highlightOverlay) { window._highlightOverlay.setMap(null); }
+      }, 3000);
     }
 
     window.addEventListener('message', function(e) {
