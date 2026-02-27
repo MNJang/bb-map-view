@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    #map { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    var params = new URLSearchParams(location.search);
+    var apiKey = params.get('key');
+
+    var map = null;
+    var markers = [];
+    var polyline = null;
+    var messageQueue = [];
+
+    if (apiKey) {
+      var script = document.createElement('script');
+      script.src = 'https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + apiKey + '&libraries=services&autoload=false';
+      script.onload = function() {
+        kakao.maps.load(function() {
+          initMap();
+          messageQueue.forEach(function(msg) { handleMessage(msg); });
+          messageQueue = [];
+          window.parent.postMessage({ action: 'mapReady' }, '*');
+        });
+      };
+      script.onerror = function() {
+        window.parent.postMessage({ action: 'mapError', message: 'SDK load failed' }, '*');
+      };
+      document.head.appendChild(script);
+    }
+
+    function initMap() {
+      map = new kakao.maps.Map(document.getElementById('map'), {
+        center: new kakao.maps.LatLng(37.5665, 126.9780), level: 8
+      });
+    }
+
+    function clearMap() {
+      markers.forEach(function(m) { m.setMap(null); });
+      markers = [];
+      if (polyline) { polyline.setMap(null); polyline = null; }
+    }
+
+    function updateMarkers(data) {
+      if (!map) return;
+      clearMap();
+      var items = data.items || [];
+      var lo = data.lineOptions || {};
+      var bounds = new kakao.maps.LatLngBounds();
+      var points = [];
+
+      items.forEach(function(item, i) {
+        var lat = parseFloat(item.lat), lng = parseFloat(item.lng);
+        if (isNaN(lat) || isNaN(lng)) return;
+        var pos = new kakao.maps.LatLng(lat, lng);
+        points.push(pos);
+        bounds.extend(pos);
+
+        var content = item.markerHtml ||
+          '<div style="background:' + (i===0?'#5EA882':'#5078A8') + ';color:white;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid white;">' + (i+1) + '</div>';
+
+        var ov = new kakao.maps.CustomOverlay({
+          content: content, map: map, position: pos,
+          yAnchor: item.yAnchor !== undefined ? item.yAnchor : 1
+        });
+        markers.push(ov);
+      });
+
+      if (points.length > 1) {
+        polyline = new kakao.maps.Polyline({
+          path: points,
+          strokeWeight: lo.weight || 4,
+          strokeColor: lo.color || '#5078A8',
+          strokeOpacity: lo.opacity || 0.8,
+          strokeStyle: lo.style || 'solid'
+        });
+        polyline.setMap(map);
+      }
+      if (points.length > 0) map.setBounds(bounds, 80, 80, 80, 80);
+    }
+
+    function geocode(address, requestId) {
+      if (!map) {
+        window.parent.postMessage({ action:'geocodeResult', requestId:requestId, success:false }, '*');
+        return;
+      }
+      new kakao.maps.services.Geocoder().addressSearch(address, function(result, status) {
+        window.parent.postMessage({
+          action: 'geocodeResult', requestId: requestId,
+          success: status === kakao.maps.services.Status.OK,
+          lat: status === kakao.maps.services.Status.OK ? result[0].y : null,
+          lng: status === kakao.maps.services.Status.OK ? result[0].x : null
+        }, '*');
+      });
+    }
+
+    function handleMessage(data) {
+      switch (data.action) {
+        case 'updateMarkers': updateMarkers(data); break;
+        case 'geocode': geocode(data.address, data.requestId); break;
+        case 'clear': clearMap(); break;
+      }
+    }
+
+    window.addEventListener('message', function(e) {
+      var d = e.data;
+      if (!d || !d.action) return;
+      if (!map) { messageQueue.push(d); return; }
+      handleMessage(d);
+    });
+  </script>
+</body>
+</html>
