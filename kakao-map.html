@@ -63,17 +63,16 @@
       distanceOverlays = [];
     }
 
-    // OSRM 경로 조회
+    // OSRM 경로 조회 (구간별 분리)
     function fetchDrivingRoute(points, callback) {
       if (points.length < 2) { callback(null); return; }
       
-      // OSRM 좌표 형식: lng,lat;lng,lat;...
       var coords = points.map(function(p) {
         return p.lng + ',' + p.lat;
       }).join(';');
       
       var url = 'https://router.project-osrm.org/route/v1/driving/' + coords + 
-                '?overview=full&geometries=geojson&steps=false';
+                '?overview=false&geometries=geojson&steps=true&alternatives=false';
       
       fetch(url)
         .then(function(res) { return res.json(); })
@@ -87,23 +86,38 @@
         .catch(function() { callback(null); });
     }
 
-    // 경로 그리기 (실제 도로)
-    function drawDrivingRoute(route) {
-      if (!route || !route.geometry || !route.geometry.coordinates) return;
+    // 구간별 색상
+    var segColors = ['#3A6EA5','#5EA882','#D4940A','#E07070','#7B1FA2','#00897B','#E64A19','#5C6BC0'];
+
+    // 구간별 경로 그리기 (각각 다른 색)
+    function drawDrivingRouteByLegs(route, points) {
+      if (!route || !route.legs) return;
       
-      var path = route.geometry.coordinates.map(function(coord) {
-        return new kakao.maps.LatLng(coord[1], coord[0]);
+      route.legs.forEach(function(leg, i) {
+        var color = segColors[i % segColors.length];
+        
+        // 각 leg의 steps에서 좌표 수집
+        var path = [];
+        (leg.steps || []).forEach(function(step) {
+          if (step.geometry && step.geometry.coordinates) {
+            step.geometry.coordinates.forEach(function(coord) {
+              path.push(new kakao.maps.LatLng(coord[1], coord[0]));
+            });
+          }
+        });
+        
+        if (path.length >= 2) {
+          var pl = new kakao.maps.Polyline({
+            path: path,
+            strokeWeight: 5,
+            strokeColor: color,
+            strokeOpacity: 0.85,
+            strokeStyle: 'solid'
+          });
+          pl.setMap(map);
+          polylines.push(pl);
+        }
       });
-      
-      var polyline = new kakao.maps.Polyline({
-        path: path,
-        strokeWeight: 5,
-        strokeColor: '#3A6EA5',
-        strokeOpacity: 0.85,
-        strokeStyle: 'solid'
-      });
-      polyline.setMap(map);
-      polylines.push(polyline);
     }
 
     // 구간별 거리/시간 오버레이
@@ -113,14 +127,15 @@
         
         var midLat = (points[i].lat + points[i+1].lat) / 2;
         var midLng = (points[i].lng + points[i+1].lng) / 2;
+        var color = segColors[i % segColors.length];
         
         var dist = leg.distance >= 1000 
           ? (leg.distance / 1000).toFixed(1) + 'km' 
           : Math.round(leg.distance) + 'm';
         var time = Math.ceil(leg.duration / 60) + '분';
         
-        var content = '<div style="background:white;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.2);border:1px solid #ddd;white-space:nowrap;">' +
-          '<span style="color:#3A6EA5;">' + dist + '</span>' +
+        var content = '<div style="background:white;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.2);border:2px solid ' + color + ';white-space:nowrap;">' +
+          '<span style="color:' + color + ';">' + dist + '</span>' +
           '<span style="color:#999;margin:0 3px;">·</span>' +
           '<span style="color:#D4940A;">' + time + '</span></div>';
         
@@ -152,7 +167,7 @@
         bounds.extend(pos);
 
         var content = item.markerHtml ||
-          '<div style="background:' + (i===0?'#5EA882':'#5078A8') + ';color:white;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid white;">' + (i+1) + '</div>';
+          '<div style="background:' + segColors[i % segColors.length] + ';color:white;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid white;">' + (i+1) + '</div>';
 
         var ov = new kakao.maps.CustomOverlay({
           content: content, map: map, position: pos,
@@ -169,8 +184,8 @@
       if (validPoints.length >= 2 && data.useRoute !== false) {
         fetchDrivingRoute(validPoints, function(route) {
           if (route) {
-            // 실제 도로 경로 그리기
-            drawDrivingRoute(route);
+            // 구간별 색상 경로 그리기
+            drawDrivingRouteByLegs(route, validPoints);
             
             // 구간별 정보 오버레이
             if (route.legs) {
