@@ -21,6 +21,13 @@
     var polyline = null;
     var messageQueue = [];
 
+    var parentOrigin = null; // 부모 프레임 origin (보안용)
+
+    // 부모 프레임에 안전하게 메시지 전송
+    function replyToParent(data) {
+      window.parent.postMessage(data, parentOrigin || '*');
+    }
+
     if (apiKey) {
       var script = document.createElement('script');
       script.src = 'https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + apiKey + '&libraries=services&autoload=false';
@@ -29,11 +36,11 @@
           initMap();
           messageQueue.forEach(function(msg) { handleMessage(msg); });
           messageQueue = [];
-          window.parent.postMessage({ action: 'mapReady' }, '*');
+          replyToParent({ action: 'mapReady' });
         });
       };
       script.onerror = function() {
-        window.parent.postMessage({ action: 'mapError', message: 'SDK load failed' }, '*');
+        replyToParent({ action: 'mapError', message: 'SDK load failed' });
       };
       document.head.appendChild(script);
     }
@@ -90,11 +97,11 @@
 
     function geocode(address, requestId) {
       if (!map) {
-        window.parent.postMessage({ action:'geocodeResult', requestId:requestId, success:false }, '*');
+        replyToParent({ action:'geocodeResult', requestId:requestId, success:false });
         return;
       }
       new kakao.maps.services.Geocoder().addressSearch(address, function(result, status) {
-        window.parent.postMessage({
+        replyToParent({
           action: 'geocodeResult', requestId: requestId,
           success: status === kakao.maps.services.Status.OK,
           lat: status === kakao.maps.services.Status.OK ? result[0].y : null,
@@ -112,6 +119,10 @@
     }
 
     window.addEventListener('message', function(e) {
+      // 보안: GAS 도메인에서 온 메시지만 허용
+      if (!e.origin.includes('google.com') && !e.origin.includes('googleusercontent.com')) return;
+      // 부모 origin 기록 (이후 응답 시 사용)
+      if (!parentOrigin) parentOrigin = e.origin;
       var d = e.data;
       if (!d || !d.action) return;
       if (!map) { messageQueue.push(d); return; }
