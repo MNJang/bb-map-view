@@ -18,12 +18,11 @@
 
     var map = null;
     var markers = [];
-    var polyline = null;
+    var polylines = [];
+    var distanceOverlays = [];
     var messageQueue = [];
+    var parentOrigin = null;
 
-    var parentOrigin = null; // 부모 프레임 origin (보안용)
-
-    // 부모 프레임에 안전하게 메시지 전송
     function replyToParent(data) {
       window.parent.postMessage(data, parentOrigin || '*');
     }
@@ -54,22 +53,98 @@
     function clearMap() {
       markers.forEach(function(m) { m.setMap(null); });
       markers = [];
-      if (polyline) { polyline.setMap(null); polyline = null; }
+      polylines.forEach(function(p) { p.setMap(null); });
+      polylines = [];
+      distanceOverlays.forEach(function(o) { o.setMap(null); });
+      distanceOverlays = [];
+    }
+
+    // OSRM 경로 조회
+    function fetchDrivingRoute(points, callback) {
+      if (points.length < 2) { callback(null); return; }
+      
+      // OSRM 좌표 형식: lng,lat;lng,lat;...
+      var coords = points.map(function(p) {
+        return p.lng + ',' + p.lat;
+      }).join(';');
+      
+      var url = 'https://router.project-osrm.org/route/v1/driving/' + coords + 
+                '?overview=full&geometries=geojson&steps=false';
+      
+      fetch(url)
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.code === 'Ok' && data.routes && data.routes[0]) {
+            callback(data.routes[0]);
+          } else {
+            callback(null);
+          }
+        })
+        .catch(function() { callback(null); });
+    }
+
+    // 경로 그리기 (실제 도로)
+    function drawDrivingRoute(route) {
+      if (!route || !route.geometry || !route.geometry.coordinates) return;
+      
+      var path = route.geometry.coordinates.map(function(coord) {
+        return new kakao.maps.LatLng(coord[1], coord[0]);
+      });
+      
+      var polyline = new kakao.maps.Polyline({
+        path: path,
+        strokeWeight: 5,
+        strokeColor: '#3A6EA5',
+        strokeOpacity: 0.85,
+        strokeStyle: 'solid'
+      });
+      polyline.setMap(map);
+      polylines.push(polyline);
+    }
+
+    // 구간별 거리/시간 오버레이
+    function drawLegInfo(legs, points) {
+      legs.forEach(function(leg, i) {
+        if (i >= points.length - 1) return;
+        
+        var midLat = (points[i].lat + points[i+1].lat) / 2;
+        var midLng = (points[i].lng + points[i+1].lng) / 2;
+        
+        var dist = leg.distance >= 1000 
+          ? (leg.distance / 1000).toFixed(1) + 'km' 
+          : Math.round(leg.distance) + 'm';
+        var time = Math.ceil(leg.duration / 60) + '분';
+        
+        var content = '<div style="background:white;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.2);border:1px solid #ddd;white-space:nowrap;">' +
+          '<span style="color:#3A6EA5;">' + dist + '</span>' +
+          '<span style="color:#999;margin:0 3px;">·</span>' +
+          '<span style="color:#D4940A;">' + time + '</span></div>';
+        
+        var overlay = new kakao.maps.CustomOverlay({
+          content: content,
+          position: new kakao.maps.LatLng(midLat, midLng),
+          yAnchor: 0.5,
+          zIndex: 10
+        });
+        overlay.setMap(map);
+        distanceOverlays.push(overlay);
+      });
     }
 
     function updateMarkers(data) {
       if (!map) return;
       clearMap();
+
       var items = data.items || [];
       var lo = data.lineOptions || {};
       var bounds = new kakao.maps.LatLngBounds();
-      var points = [];
+      var validPoints = [];
 
       items.forEach(function(item, i) {
         var lat = parseFloat(item.lat), lng = parseFloat(item.lng);
         if (isNaN(lat) || isNaN(lng)) return;
         var pos = new kakao.maps.LatLng(lat, lng);
-        points.push(pos);
+        validPoints.push({ lat: lat, lng: lng });
         bounds.extend(pos);
 
         var content = item.markerHtml ||
@@ -82,17 +157,62 @@
         markers.push(ov);
       });
 
-      if (points.length > 1) {
-        polyline = new kakao.maps.Polyline({
-          path: points,
-          strokeWeight: lo.weight || 4,
-          strokeColor: lo.color || '#5078A8',
-          strokeOpacity: lo.opacity || 0.8,
-          strokeStyle: lo.style || 'solid'
-        });
-        polyline.setMap(map);
+      if (validPoints.length > 0) {
+        map.setBounds(bounds, 80, 80, 80, 80);
       }
-      if (points.length > 0) map.setBounds(bounds, 80, 80, 80, 80);
+
+      // 경로 조회 (2개 이상 지점)
+      if (validPoints.length >= 2 && data.useRoute !== false) {
+        fetchDrivingRoute(validPoints, function(route) {
+          if (route) {
+            // 실제 도로 경로 그리기
+            drawDrivingRoute(route);
+            
+            // 구간별 정보 오버레이
+            if (route.legs) {
+              drawLegInfo(route.legs, validPoints);
+            }
+            
+            // 부모에게 경로 정보 전송
+            var legInfos = (route.legs || []).map(function(leg, i) {
+              return {
+                fromIndex: i,
+                toIndex: i + 1,
+                distance: Math.round(leg.distance),
+                duration: Math.round(leg.duration)
+              };
+            });
+            
+            replyToParent({
+              action: 'routeResult',
+              totalDistance: Math.round(route.distance),
+              totalDuration: Math.round(route.duration),
+              legs: legInfos
+            });
+          } else {
+            // OSRM 실패 시 직선 폴백
+            drawStraightLine(validPoints, lo);
+            replyToParent({ action: 'routeResult', error: true });
+          }
+        });
+      }
+    }
+
+    // 직선 폴백
+    function drawStraightLine(points, lo) {
+      if (points.length < 2) return;
+      var path = points.map(function(p) {
+        return new kakao.maps.LatLng(p.lat, p.lng);
+      });
+      var polyline = new kakao.maps.Polyline({
+        path: path,
+        strokeWeight: lo.weight || 4,
+        strokeColor: lo.color || '#5078A8',
+        strokeOpacity: lo.opacity || 0.8,
+        strokeStyle: 'dashed'
+      });
+      polyline.setMap(map);
+      polylines.push(polyline);
     }
 
     function geocode(address, requestId) {
@@ -106,7 +226,7 @@
           success: status === kakao.maps.services.Status.OK,
           lat: status === kakao.maps.services.Status.OK ? result[0].y : null,
           lng: status === kakao.maps.services.Status.OK ? result[0].x : null
-        }, '*');
+        });
       });
     }
 
@@ -119,9 +239,7 @@
     }
 
     window.addEventListener('message', function(e) {
-      // 보안: GAS 도메인에서 온 메시지만 허용
       if (!e.origin.includes('google.com') && !e.origin.includes('googleusercontent.com')) return;
-      // 부모 origin 기록 (이후 응답 시 사용)
       if (!parentOrigin) parentOrigin = e.origin;
       var d = e.data;
       if (!d || !d.action) return;
